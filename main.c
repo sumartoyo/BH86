@@ -8,11 +8,13 @@
 #define NODE_INTERNAL 1
 #define NODE_EXTERNAL 2
 
+// parameters
 float G = 0.0001;
 float THETA = 0.5;
 float EPS_2 = 0.001;
 float ETA = 0.1;
 
+// body data structure
 int n_bodies;
 float *bodies_mass;
 float *bodies_x;
@@ -20,6 +22,7 @@ float *bodies_y;
 float *bodies_vx;
 float *bodies_vy;
 
+// node data structure
 int n_nodes;
 int *nodes_type;
 int *nodes_body;
@@ -34,18 +37,18 @@ int *nodes_ne;
 int *nodes_sw;
 int *nodes_se;
 
-void init_bodies();
-void init_nodes();
-void free_bodies();
-void free_nodes();
+// main loop keep running flag
+static volatile int step_continue = 1;
 
+// body functions
+void create_body_random();
 void create_body(int idx_body, float x, float y, float mass);
-void create_node(float xmin, float ymin, float width);
-
 void compute_force(int idx_body, int idx_node, float *fx, float *fy);
 void compute_force_recursive(int idx_body, int idx_node, float *fx, float *fy, int children[]);
 void update_pos(int idx_body, float fx, float fy);
 
+// node functions
+void create_node(float xmin, float ymin, float width);
 void insert(int idx_node, int idx_body);
 void insert_recursive(int idx_node, int idx_body);
 void update_mass(int idx_node, int idx_body);
@@ -53,8 +56,243 @@ void branch(int idx_node);
 void eliminate_empty(int idx_node);
 void eliminate_empty_recursive(int idx_node, int children[]);
 void make_tree();
+void print_tree(int idx_node, int tab, char *name);
 
+// main loop
 void step(int epoch);
+void handle_sigint(int _);
+
+// malloc/free
+void malloc_bodies();
+void malloc_nodes();
+void free_bodies();
+void free_nodes();
+
+// main function
+int main(int argc, char *argv[]) {
+    if (argc > 1) {
+        n_bodies = atoi(argv[1]);
+        if (n_bodies < 1) {
+            printf("ERROR: n should be > 0\n");
+            return 1;
+        }
+    } else {
+        printf("ERROR: please input n in argv\n");
+        return 1;
+    }
+
+    signal(SIGINT, handle_sigint);
+
+    malloc_bodies();
+    create_body_random();
+
+    // make_tree();
+    // print_tree(0, 0, "root");
+    // free_nodes();
+
+    step(0);
+
+    free_bodies();
+
+    return 0;
+}
+
+// implementations
+
+// body functions
+
+void create_body_random() {
+    int i;
+    float x, y, m;
+    srand(time(NULL));
+    for (i = 0; i < n_bodies; i++) {
+        x = rand()%(n_bodies+1);
+        y = rand()%(n_bodies+1);
+        x += (rand()%10)*0.1;
+        y += (rand()%10)*0.1;
+        x *= rand()%2 == 0 ? 1 : -1;
+        y *= rand()%2 == 0 ? 1 : -1;
+        m = (rand()%9)+1;
+        // printf("%f %f %f\n", x, y, m);
+        create_body(i, x, y, m);
+    }
+}
+
+void create_body(int i, float x, float y, float mass) {
+    bodies_x[i] = x;
+    bodies_y[i] = y;
+    bodies_mass[i] = mass;
+}
+
+void compute_force(int i, int j, float *fx, float *fy) {
+    float r, strength;
+    float dx = nodes_xmass[j]-bodies_x[i];
+    float dy = nodes_ymass[j]-bodies_y[i];
+
+    *fx = 0;
+    *fy = 0;
+
+    if (fabs(dx) > 0 || fabs(dy) > 0) {
+        r = sqrt(pow(dx, 2) + pow(dy, 2));
+        strength = G*bodies_mass[i]*nodes_mass[j] /
+            sqrt(pow(pow(r, 2)+EPS_2, 3));
+
+        if (nodes_body[j] > -1) {
+            *fx = strength*dx;
+            *fy = strength*dy;
+        } else {
+            if (nodes_width[j]/r < THETA) {
+                *fx = strength*dx;
+                *fy = strength*dy;
+            } else {
+                compute_force_recursive(i, j, fx, fy, nodes_nw);
+                compute_force_recursive(i, j, fx, fy, nodes_ne);
+                compute_force_recursive(i, j, fx, fy, nodes_sw);
+                compute_force_recursive(i, j, fx, fy, nodes_se);
+            }
+        }
+    }
+}
+
+void compute_force_recursive(int i, int j, float *fx, float *fy, int children[]) {
+    float fx_child, fy_child;
+    int idx_child = children[j];
+    if (idx_child > -1) {
+        compute_force(i, idx_child, &fx_child, &fy_child);
+        *fx += fx_child;
+        *fy += fy_child;
+    }
+}
+
+void update_pos(int i, float fx, float fy) {
+    float ax = fx/bodies_mass[i],
+          ay = fy/bodies_mass[i],
+          dvx = ax*ETA,
+          dvy = ay*ETA;
+    bodies_x[i] += (bodies_vx[i]*ETA)+(0.5*dvx*ETA);
+    bodies_y[i] += (bodies_vy[i]*ETA)+(0.5*dvy*ETA);
+    bodies_vx[i] += dvx;
+    bodies_vy[i] += dvy;
+}
+
+// node functions
+
+void create_node(float xmin, float ymin, float width) {
+    int j = n_nodes;
+    nodes_type[j] = NODE_EXTERNAL;
+    nodes_body[j] = -1;
+    nodes_xmin[j] = xmin;
+    nodes_ymin[j] = ymin;
+    nodes_width[j] = width;
+    nodes_nw[j] = -1;
+    nodes_ne[j] = -1;
+    nodes_sw[j] = -1;
+    nodes_se[j] = -1;
+    n_nodes += 1;
+}
+
+void insert(int j, int i) {
+    update_mass(j, i);
+    if (nodes_type[j] == NODE_INTERNAL) {
+        insert_recursive(j, i);
+    } else if (nodes_body[j] > -1) {
+        nodes_type[j] = NODE_INTERNAL;
+        branch(j);
+        insert_recursive(j, nodes_body[j]);
+        insert_recursive(j, i);
+        nodes_body[j] = -1;
+    } else {
+        nodes_body[j] = i;
+    }
+}
+
+void insert_recursive(int j, int i) {
+    float width_half = nodes_width[j]/2;
+    char insert_ver = bodies_y[i] < nodes_ymin[j]+width_half ? 's' : 'n';
+    char insert_hor = bodies_x[i] < nodes_xmin[j]+width_half ? 'w' : 'e';
+    if (insert_ver == 'n') {
+        if (insert_hor == 'w') {
+            insert(nodes_nw[j], i);
+        } else {
+            insert(nodes_ne[j], i);
+        }
+    } else {
+        if (insert_hor == 'w') {
+            insert(nodes_sw[j], i);
+        } else {
+            insert(nodes_se[j], i);
+        }
+    }
+}
+
+void update_mass(int j, int i) {
+    float weight_x = nodes_xmass[j]*nodes_mass[j],
+          weight_y = nodes_ymass[j]*nodes_mass[j];
+    weight_x += bodies_x[i]*bodies_mass[i];
+    weight_y += bodies_y[i]*bodies_mass[i];
+    nodes_mass[j] += bodies_mass[i];
+    nodes_xmass[j] = weight_x/nodes_mass[j];
+    nodes_ymass[j] = weight_y/nodes_mass[j];
+}
+
+void branch(int j) {
+    float xmin = nodes_xmin[j];
+    float ymin = nodes_ymin[j];
+    float width_half = nodes_width[j]/2;
+    create_node(xmin, ymin+width_half, width_half);
+    nodes_nw[j] = n_nodes-1;
+    create_node(xmin+width_half, ymin+width_half, width_half);
+    nodes_ne[j] = n_nodes-1;
+    create_node(xmin, ymin, width_half);
+    nodes_sw[j] = n_nodes-1;
+    create_node(xmin+width_half, ymin, width_half);
+    nodes_se[j] = n_nodes-1;
+}
+
+void eliminate_empty(int j) {
+    eliminate_empty_recursive(j, nodes_nw);
+    eliminate_empty_recursive(j, nodes_ne);
+    eliminate_empty_recursive(j, nodes_sw);
+    eliminate_empty_recursive(j, nodes_se);
+}
+
+void eliminate_empty_recursive(int j, int children[]) {
+    int idx_child = children[j];
+    if (idx_child > -1) {
+        if (nodes_type[idx_child] == NODE_EXTERNAL) {
+            if (nodes_body[idx_child] == -1) {
+                children[j] = -1;
+            }
+        } else {
+            eliminate_empty(idx_child);
+        }
+    }
+}
+
+void make_tree() {
+    int i;
+    float xmin = bodies_x[0],
+          xmax = bodies_x[0],
+          ymin = bodies_y[0],
+          ymax = bodies_y[0],
+          dx, dy;
+
+    for (i = 1; i < n_bodies; i++) {
+        if (bodies_x[i] < xmin) xmin = bodies_x[i];
+        if (bodies_x[i] > xmax) xmax = bodies_x[i];
+        if (bodies_y[i] < ymin) ymin = bodies_y[i];
+        if (bodies_y[i] > ymax) ymax = bodies_y[i];
+    }
+    dx = xmax-xmin;
+    dy = ymax-ymin;
+
+    malloc_nodes();
+    create_node(xmin, ymin, dx > dy ? dx : dy);
+    for (i = 0; i < n_bodies; i++) {
+        insert(0, i);
+    }
+    eliminate_empty(0);
+}
 
 void print_tree(int idx_node, int tab, char *name) {
     int i, idx_body;
@@ -87,66 +325,62 @@ void print_tree(int idx_node, int tab, char *name) {
     }
 }
 
-static volatile int keepRunning = 1;
-void intHandler(int dummy) {
-    keepRunning = 0;
-}
+// main loop
 
-int main(int argc, char *argv[]) {
-    signal(SIGINT, intHandler);
+void step(int epoch) {
+    int i;
+    float fx, fy;
 
-    n_bodies = 2;
-    init_bodies();
+    printf("epoch %d\n", epoch);
 
-    create_body(0, -0.1, 0, 0.1);
-    create_body(1, 0.1, 0, 0.1);
-
-    // make_tree();
-    // print_tree(0, 0, "root");
-
-    step(0);
-
-    free_bodies();
-
-    return 0;
-}
-
-// implementations
-
-void init_bodies() {
-    long long int size_float = n_bodies*sizeof(float);
-    bodies_mass = malloc(size_float);
-    bodies_x = malloc(size_float);
-    bodies_y = malloc(size_float);
-    bodies_vx = malloc(size_float);
-    bodies_vy = malloc(size_float);
-}
-
-void init_nodes() {
-    long long int size_float, size_int;
-    float sisa = n_bodies*1.0;
-    float total = 0;
-
-    while (sisa >= 1) {
-        total += sisa;
-        sisa = sisa/2;
+    make_tree();
+    for (i = 0; i < n_bodies; i++) {
+        compute_force(i, 0, &fx, &fy);
+        update_pos(i, fx, fy);
+        // printf("%f %f %f\n", bodies_mass[i], bodies_x[i], bodies_vx[i]);
     }
-    n_nodes = (int) ceil(total);
+    free_nodes();
 
-    size_float = n_nodes*sizeof(float);
-    size_int = n_nodes*sizeof(int);
-    nodes_type = malloc(size_int);
-    nodes_body = malloc(size_int);
-    nodes_mass = malloc(size_float);
-    nodes_xmass = malloc(size_float);
-    nodes_ymass = malloc(size_float);
-    nodes_xmin = malloc(size_float);
-    nodes_ymin = malloc(size_float);
-    nodes_width = malloc(size_float);
-    nodes_nw = malloc(size_int);
-    nodes_ne = malloc(size_int);
-    nodes_sw = malloc(size_int);
-    nodes_se = malloc(size_int);
+    if (step_continue) {
+        usleep(50000);
+        step(epoch+1);
+    }
+}
+
+void handle_sigint(int _) {
+    step_continue = 0;
+}
+
+// malloc/free
+
+void malloc_bodies() {
+    long long int s = n_bodies*sizeof(float);
+    bodies_mass = malloc(s);
+    bodies_x = malloc(s);
+    bodies_y = malloc(s);
+    bodies_vx = malloc(s);
+    bodies_vy = malloc(s);
+}
+
+void malloc_nodes() {
+    long long int sf, si;
+
+    n_nodes = n_bodies*4 + 1;
+    sf = n_nodes*sizeof(float);
+    si = n_nodes*sizeof(int);
+
+    nodes_type = malloc(si);
+    nodes_body = malloc(si);
+    nodes_mass = malloc(sf);
+    nodes_xmass = malloc(sf);
+    nodes_ymass = malloc(sf);
+    nodes_xmin = malloc(sf);
+    nodes_ymin = malloc(sf);
+    nodes_width = malloc(sf);
+    nodes_nw = malloc(si);
+    nodes_ne = malloc(si);
+    nodes_sw = malloc(si);
+    nodes_se = malloc(si);
 
     n_nodes = 0;
 }
@@ -172,190 +406,4 @@ void free_nodes() {
     free(nodes_ne);
     free(nodes_sw);
     free(nodes_se);
-}
-
-void create_body(int idx_body, float x, float y, float mass) {
-    bodies_x[idx_body] = x;
-    bodies_y[idx_body] = y;
-    bodies_mass[idx_body] = mass;
-}
-
-void create_node(float xmin, float ymin, float width) {
-    nodes_type[n_nodes] = NODE_EXTERNAL;
-    nodes_body[n_nodes] = -1;
-    nodes_xmin[n_nodes] = xmin;
-    nodes_ymin[n_nodes] = ymin;
-    nodes_width[n_nodes] = width;
-    nodes_nw[n_nodes] = -1;
-    nodes_ne[n_nodes] = -1;
-    nodes_sw[n_nodes] = -1;
-    nodes_se[n_nodes] = -1;
-    n_nodes += 1;
-}
-
-void compute_force(int idx_body, int idx_node, float *fx, float *fy) {
-    float r, strength;
-    float dx = nodes_xmass[idx_node]-bodies_x[idx_body];
-    float dy = nodes_ymass[idx_node]-bodies_y[idx_body];
-
-    *fx = 0;
-    *fy = 0;
-
-    if (fabs(dx) > 0 || fabs(dy) > 0) {
-        r = sqrt(pow(dx, 2) + pow(dy, 2));
-        strength = G*bodies_mass[idx_body]*nodes_mass[idx_node] /
-            sqrt(pow(pow(r, 2)+EPS_2, 3));
-
-        if (nodes_body[idx_node] > -1) {
-            *fx = strength*dx;
-            *fy = strength*dy;
-        } else {
-            if (nodes_width[idx_node]/r < THETA) {
-                *fx = strength*dx;
-                *fy = strength*dy;
-            } else {
-                compute_force_recursive(idx_body, idx_node, fx, fy, nodes_nw);
-                compute_force_recursive(idx_body, idx_node, fx, fy, nodes_ne);
-                compute_force_recursive(idx_body, idx_node, fx, fy, nodes_sw);
-                compute_force_recursive(idx_body, idx_node, fx, fy, nodes_se);
-            }
-        }
-    }
-}
-
-void compute_force_recursive(int idx_body, int idx_node, float *fx, float *fy, int children[]) {
-    float fx_child, fy_child;
-    int idx_child = children[idx_node];
-    if (idx_child > -1) {
-        compute_force(idx_body, idx_child, &fx_child, &fy_child);
-        *fx += fx_child;
-        *fy += fy_child;
-    }
-}
-
-void update_pos(int idx_body, float fx, float fy) {
-    float ax = fx/bodies_mass[idx_body],
-          ay = fy/bodies_mass[idx_body],
-          dvx = ax*ETA,
-          dvy = ay*ETA;
-    bodies_x[idx_body] += (bodies_vx[idx_body]*ETA)+(0.5*dvx*ETA);
-    bodies_y[idx_body] += (bodies_vy[idx_body]*ETA)+(0.5*dvy*ETA);
-    bodies_vx[idx_body] += dvx;
-    bodies_vy[idx_body] += dvy;
-}
-
-void insert(int idx_node, int idx_body) {
-    update_mass(idx_node, idx_body);
-    if (nodes_type[idx_node] == NODE_INTERNAL) {
-        insert_recursive(idx_node, idx_body);
-    } else if (nodes_body[idx_node] > -1) {
-        nodes_type[idx_node] = NODE_INTERNAL;
-        branch(idx_node);
-        insert_recursive(idx_node, nodes_body[idx_node]);
-        insert_recursive(idx_node, idx_body);
-        nodes_body[idx_node] = -1;
-    } else {
-        nodes_body[idx_node] = idx_body;
-    }
-}
-
-void insert_recursive(int idx_node, int idx_body) {
-    float width_half = nodes_width[idx_node]/2;
-    char insert_ver = bodies_y[idx_body] < nodes_ymin[idx_node]+width_half ? 's' : 'n';
-    char insert_hor = bodies_x[idx_body] < nodes_xmin[idx_node]+width_half ? 'w' : 'e';
-    if (insert_ver == 'n') {
-        if (insert_hor == 'w') {
-            insert(nodes_nw[idx_node], idx_body);
-        } else {
-            insert(nodes_ne[idx_node], idx_body);
-        }
-    } else {
-        if (insert_hor == 'w') {
-            insert(nodes_sw[idx_node], idx_body);
-        } else {
-            insert(nodes_se[idx_node], idx_body);
-        }
-    }
-}
-
-void update_mass(int idx_node, int idx_body) {
-    float weight_x = nodes_xmass[idx_node]*nodes_mass[idx_node],
-          weight_y = nodes_ymass[idx_node]*nodes_mass[idx_node];
-    weight_x += bodies_x[idx_body]*bodies_mass[idx_body];
-    weight_y += bodies_y[idx_body]*bodies_mass[idx_body];
-    nodes_mass[idx_node] += bodies_mass[idx_body];
-    nodes_xmass[idx_node] = weight_x/nodes_mass[idx_node];
-    nodes_ymass[idx_node] = weight_y/nodes_mass[idx_node];
-}
-
-void branch(int idx_node) {
-    float xmin = nodes_xmin[idx_node];
-    float ymin = nodes_ymin[idx_node];
-    float width_half = nodes_width[idx_node]/2;
-    create_node(xmin, ymin+width_half, width_half);
-    nodes_nw[idx_node] = n_nodes-1;
-    create_node(xmin+width_half, ymin+width_half, width_half);
-    nodes_ne[idx_node] = n_nodes-1;
-    create_node(xmin, ymin, width_half);
-    nodes_sw[idx_node] = n_nodes-1;
-    create_node(xmin+width_half, ymin, width_half);
-    nodes_se[idx_node] = n_nodes-1;
-}
-
-void eliminate_empty(int idx_node) {
-    eliminate_empty_recursive(idx_node, nodes_nw);
-    eliminate_empty_recursive(idx_node, nodes_ne);
-    eliminate_empty_recursive(idx_node, nodes_sw);
-    eliminate_empty_recursive(idx_node, nodes_se);
-}
-
-void eliminate_empty_recursive(int idx_node, int children[]) {
-    int idx_child = children[idx_node];
-    if (idx_child > -1) {
-        if (nodes_type[idx_child] == NODE_EXTERNAL) {
-            if (nodes_body[idx_child] == -1) {
-                children[idx_node] = -1;
-            }
-        } else {
-            eliminate_empty(idx_child);
-        }
-    }
-}
-
-void make_tree() {
-    int i;
-    float xmin = bodies_x[0],
-          xmax = bodies_x[0],
-          ymin = bodies_y[0],
-          ymax = bodies_y[0];
-    for (i = 1; i < n_bodies; i++) {
-        if (bodies_x[i] < xmin) xmin = bodies_x[i];
-        if (bodies_x[i] > xmax) xmax = bodies_x[i];
-        if (bodies_y[i] < ymin) ymin = bodies_y[i];
-        if (bodies_y[i] > ymax) ymax = bodies_y[i];
-    }
-
-    init_nodes();
-    create_node(xmin, ymin, xmax-xmin > ymax-ymin ? xmax-xmin : ymax-ymin);
-    for (i = 0; i < n_bodies; i++) {
-        insert(0, i);
-    }
-    eliminate_empty(0);
-}
-
-void step(int epoch) {
-    int i;
-    float fx, fy;
-    printf("epoch %d\n", epoch);
-    make_tree();
-    for (i = 0; i < n_bodies; i++) {
-        compute_force(i, 0, &fx, &fy);
-        update_pos(i, fx, fy);
-        printf("%f %f %f\n", bodies_mass[i], bodies_x[i], bodies_vx[i]);
-    }
-    if (keepRunning) {
-        usleep(50000);
-        step(epoch+1);
-    }
-    free_nodes();
 }
