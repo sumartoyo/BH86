@@ -4,13 +4,16 @@
 #include <time.h>
 #include <signal.h>
 
+#define true 1
+#define false 0
+
 #define NODE_EMPTY 0
 #define NODE_INTERNAL 1
 #define NODE_EXTERNAL 2
 
 // parameters
-float G = 0.0001;
-float THETA = 0.5;
+float G = 0.001;
+float THETA = 0.1;
 float EPS_2 = 0.001;
 float ETA = 0.1;
 
@@ -62,6 +65,10 @@ void print_tree(int idx_node, int tab, char *name);
 void step(int epoch);
 void handle_sigint(int _);
 
+// program
+int read_arg(int argc, char *argv[]);
+int read_data();
+
 // malloc/free
 void malloc_bodies();
 void malloc_nodes();
@@ -70,25 +77,11 @@ void free_nodes();
 
 // main function
 int main(int argc, char *argv[]) {
-    if (argc > 1) {
-        n_bodies = atoi(argv[1]);
-        if (n_bodies < 1) {
-            printf("ERROR: n should be > 0\n");
-            return 1;
-        }
-    } else {
-        printf("ERROR: please input n in argv\n");
+    if (read_arg(argc, argv) == false) {
         return 1;
     }
 
     signal(SIGINT, handle_sigint);
-
-    malloc_bodies();
-    create_body_random();
-
-    // make_tree();
-    // print_tree(0, 0, "root");
-    // free_nodes();
 
     step(0);
 
@@ -106,13 +99,13 @@ void create_body_random() {
     float x, y, m;
     srand(time(NULL));
     for (i = 0; i < n_bodies; i++) {
-        x = rand()%(n_bodies+1);
-        y = rand()%(n_bodies+1);
+        x = rand()%n_bodies;
+        y = rand()%n_bodies;
         x += (rand()%10)*0.1;
         y += (rand()%10)*0.1;
         x *= rand()%2 == 0 ? 1 : -1;
         y *= rand()%2 == 0 ? 1 : -1;
-        m = (rand()%9)+1;
+        m = (rand()%9)+11;
         // printf("%f %f %f\n", x, y, m);
         create_body(i, x, y, m);
     }
@@ -331,16 +324,19 @@ void step(int epoch) {
     int i;
     float fx, fy;
 
-    printf("epoch %d\n", epoch);
+    printf("step %d\n", epoch);
 
     make_tree();
+    print_tree(0, 0, "root");
     for (i = 0; i < n_bodies; i++) {
         compute_force(i, 0, &fx, &fy);
+        printf("%f %f\n", fx, fy);
         update_pos(i, fx, fy);
-        // printf("%f %f %f\n", bodies_mass[i], bodies_x[i], bodies_vx[i]);
+        printf("%f %f %f %f\n", bodies_x[i], bodies_y[i], bodies_vx[i], bodies_vy[i]);
     }
     free_nodes();
 
+    step_continue = epoch == 1 ? 0 : 1;
     if (step_continue) {
         usleep(50000);
         step(epoch+1);
@@ -349,6 +345,74 @@ void step(int epoch) {
 
 void handle_sigint(int _) {
     step_continue = 0;
+}
+
+// program
+
+int read_arg(int argc, char *argv[]) {
+    int i;
+    for (i = 0; i < argc-1; i++) {
+        if (strcmp(argv[i], "-n") == 0) {
+            if (strcmp(argv[i+1], "data.txt") == 0) {
+                if (read_data()) {
+                    if (n_bodies < 1) {
+                        printf("ERROR: no body in data.txt\n");
+                        free_bodies();
+                        return false;
+                    }
+                } else {
+                    return false;
+                }
+            } else {
+                n_bodies = atoi(argv[i+1]);
+                if (n_bodies < 1) {
+                    printf("ERROR: n is not an integer or n < 1\n");
+                    return false;
+                }
+                malloc_bodies();
+                create_body_random();
+            }
+        }
+    }
+    if (n_bodies == 0) {
+        printf("ERROR: please see USAGE in code\n");
+        return false;
+    }
+    return true;
+}
+
+int read_data() {
+    FILE *fp;
+    float x, y, mass;
+    int i;
+
+    fp = fopen("data.txt", "r");
+    if (fp == NULL) {
+        printf("Can't open data.txt\n");
+        return false;
+    }
+
+    n_bodies = 0;
+    while (!feof(fp)) {
+        if (fscanf(fp, "%f %f %f", &x, &y, &mass) != 3) {
+            break;
+        }
+        n_bodies += 1;
+    }
+    malloc_bodies();
+
+    i = 0;
+    rewind(fp);
+    while (!feof(fp)) {
+        if (fscanf(fp, "%f %f %f", &x, &y, &mass) != 3) {
+            break;
+        }
+        create_body(i, x, y, mass);
+        i += 1;
+    }
+
+    fclose(fp);
+    return true;
 }
 
 // malloc/free
