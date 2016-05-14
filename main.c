@@ -41,7 +41,7 @@ int *nodes_sw;
 int *nodes_se;
 
 // main loop keep running flag
-static volatile int step_continue = 1;
+static volatile int steps = -1;
 
 // body functions
 void create_body_random();
@@ -80,13 +80,9 @@ int main(int argc, char *argv[]) {
     if (read_arg(argc, argv) == false) {
         return 1;
     }
-
     signal(SIGINT, handle_sigint);
-
     step(0);
-
     free_bodies();
-
     return 0;
 }
 
@@ -324,35 +320,34 @@ void step(int epoch) {
     int i;
     float fx, fy;
 
-    printf("step %d\n", epoch);
+    printf("step %d\n", epoch+1);
 
     make_tree();
-    print_tree(0, 0, "root");
+    // print_tree(0, 0, "root");
     for (i = 0; i < n_bodies; i++) {
         compute_force(i, 0, &fx, &fy);
-        printf("%f %f\n", fx, fy);
+        // printf("%f %f\n", fx, fy);
         update_pos(i, fx, fy);
-        printf("%f %f %f %f\n", bodies_x[i], bodies_y[i], bodies_vx[i], bodies_vy[i]);
+        // printf("%f %f %f %f\n", bodies_x[i], bodies_y[i], bodies_vx[i], bodies_vy[i]);
     }
     free_nodes();
 
-    step_continue = epoch == 1 ? 0 : 1;
-    if (step_continue) {
+    if (steps < 0 || epoch < steps-1) {
         usleep(50000);
         step(epoch+1);
     }
 }
 
 void handle_sigint(int _) {
-    step_continue = 0;
+    steps = 0;
 }
 
 // program
 
 int read_arg(int argc, char *argv[]) {
     int i;
-    for (i = 0; i < argc-1; i++) {
-        if (strcmp(argv[i], "-n") == 0) {
+    for (i = 1; i < argc-1; i += 2) {
+        if (strcmp(argv[i], "-n_bodies") == 0) {
             if (strcmp(argv[i+1], "data.txt") == 0) {
                 if (read_data()) {
                     if (n_bodies < 1) {
@@ -366,11 +361,17 @@ int read_arg(int argc, char *argv[]) {
             } else {
                 n_bodies = atoi(argv[i+1]);
                 if (n_bodies < 1) {
-                    printf("ERROR: n is not an integer or n < 1\n");
+                    printf("ERROR: n_bodies is not an integer or n_bodies < 1\n");
                     return false;
                 }
                 malloc_bodies();
                 create_body_random();
+            }
+        } else if (strcmp(argv[i], "-steps") == 0) {
+            steps = atoi(argv[i+1]);
+            if (steps < 1) {
+                printf("ERROR: steps is < 1\n");
+                return false;
             }
         }
     }

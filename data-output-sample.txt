@@ -65,6 +65,8 @@
 4.100000 53.500000 16.000000 0.000000 0.000000
 -19.299999 9.200000 12.000000 0.000000 0.000000
 
+# OUTPUT dengan argument `-n data.txt`
+
 # TREE setelah satu iterasi
 root nin cx=2.858811 cy=-4.481750 cm=959.000000
     nw nin cx=-31.071518 cy=37.153160 cm=158.000000
