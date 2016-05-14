@@ -1,3 +1,4 @@
+#include "mpi.h"
 #include <stdio.h>
 #include <stdlib.h>
 #include <math.h>
@@ -14,8 +15,8 @@
 // parameters
 float G = 0.001;
 float THETA = 0.1;
-float EPS_2 = 0.001;
-float ETA = 0.1;
+float EPS2 = 0.001;
+float TIME = 0.1;
 
 // body data structure
 int n_bodies;
@@ -40,8 +41,11 @@ int *nodes_ne;
 int *nodes_sw;
 int *nodes_se;
 
-// main loop keep running flag
+// program variables
 static volatile int steps = -1;
+int tsleep = 50000;
+int is_print_bodies = false;
+int is_print_tree = false;
 
 // body functions
 void create_body_random();
@@ -49,6 +53,7 @@ void create_body(int idx_body, float x, float y, float mass);
 void compute_force(int idx_body, int idx_node, float *fx, float *fy);
 void compute_force_recursive(int idx_body, int idx_node, float *fx, float *fy, int children[]);
 void update_pos(int idx_body, float fx, float fy);
+void print_bodies(char *title);
 
 // node functions
 void create_node(float xmin, float ymin, float width);
@@ -62,7 +67,7 @@ void make_tree();
 void print_tree(int idx_node, int tab, char *name);
 
 // main loop
-void step(int epoch);
+void step();
 void handle_sigint(int _);
 
 // program
@@ -81,7 +86,8 @@ int main(int argc, char *argv[]) {
         return 1;
     }
     signal(SIGINT, handle_sigint);
-    step(0);
+    if (is_print_bodies) print_bodies("[INPUT]");
+    step();
     free_bodies();
     return 0;
 }
@@ -92,7 +98,8 @@ int main(int argc, char *argv[]) {
 
 void create_body_random() {
     int i;
-    float x, y, m;
+    float x, y, mass;
+
     srand(time(NULL));
     for (i = 0; i < n_bodies; i++) {
         x = rand()%n_bodies;
@@ -101,9 +108,8 @@ void create_body_random() {
         y += (rand()%10)*0.1;
         x *= rand()%2 == 0 ? 1 : -1;
         y *= rand()%2 == 0 ? 1 : -1;
-        m = (rand()%9)+11;
-        // printf("%f %f %f\n", x, y, m);
-        create_body(i, x, y, m);
+        mass = (rand()%9)+11;
+        create_body(i, x, y, mass);
     }
 }
 
@@ -124,7 +130,7 @@ void compute_force(int i, int j, float *fx, float *fy) {
     if (fabs(dx) > 0 || fabs(dy) > 0) {
         r = sqrt(pow(dx, 2) + pow(dy, 2));
         strength = G*bodies_mass[i]*nodes_mass[j] /
-            sqrt(pow(pow(r, 2)+EPS_2, 3));
+            sqrt(pow(pow(r, 2)+EPS2, 3));
 
         if (nodes_body[j] > -1) {
             *fx = strength*dx;
@@ -156,12 +162,27 @@ void compute_force_recursive(int i, int j, float *fx, float *fy, int children[])
 void update_pos(int i, float fx, float fy) {
     float ax = fx/bodies_mass[i],
           ay = fy/bodies_mass[i],
-          dvx = ax*ETA,
-          dvy = ay*ETA;
-    bodies_x[i] += (bodies_vx[i]*ETA)+(0.5*dvx*ETA);
-    bodies_y[i] += (bodies_vy[i]*ETA)+(0.5*dvy*ETA);
+          dvx = ax*TIME,
+          dvy = ay*TIME;
+    bodies_x[i] += (bodies_vx[i]*TIME)+(0.5*dvx*TIME);
+    bodies_y[i] += (bodies_vy[i]*TIME)+(0.5*dvy*TIME);
     bodies_vx[i] += dvx;
     bodies_vy[i] += dvy;
+}
+
+void print_bodies(char *title) {
+    int i;
+    printf("%s\n", title);
+    printf("x  y  mass  vx  vy\n");
+    for (i = 0; i < n_bodies; i++) {
+        printf("%f %f %f %f %f\n",
+            bodies_x[i],
+            bodies_y[i],
+            bodies_mass[i],
+            bodies_vx[i],
+            bodies_vy[i]
+        );
+    }
 }
 
 // node functions
@@ -316,26 +337,40 @@ void print_tree(int idx_node, int tab, char *name) {
 
 // main loop
 
-void step(int epoch) {
-    int i;
+void step() {
+    int i, epoch = 0;
     float fx, fy;
+    clock_t timer_start, timer_end;
+    double time_elapsed = 0;
+    float time_per_frame;
 
-    printf("step %d\n", epoch+1);
+    while (steps < 0 || epoch < steps) {
+        printf("[STEP %d]\n", epoch+1);
 
-    make_tree();
-    // print_tree(0, 0, "root");
-    for (i = 0; i < n_bodies; i++) {
-        compute_force(i, 0, &fx, &fy);
-        // printf("%f %f\n", fx, fy);
-        update_pos(i, fx, fy);
-        // printf("%f %f %f %f\n", bodies_x[i], bodies_y[i], bodies_vx[i], bodies_vy[i]);
+        timer_start = clock();
+
+        make_tree();
+        for (i = 0; i < n_bodies; i++) {
+            compute_force(i, 0, &fx, &fy);
+            update_pos(i, fx, fy);
+        }
+
+        timer_end = clock();
+        time_elapsed += (timer_end-timer_start)/(double)CLOCKS_PER_SEC;
+
+        if (is_print_tree) { printf("[TREE]\n"); print_tree(0, 0, "root"); }
+        if (is_print_bodies) print_bodies("[UPDATED POSITION]");
+
+        free_nodes();
+        usleep(tsleep);
+        epoch += 1;
     }
-    free_nodes();
 
-    if (steps < 0 || epoch < steps-1) {
-        usleep(50000);
-        step(epoch+1);
-    }
+    time_per_frame = time_elapsed/epoch;
+
+    printf("\n[TIME]\n");
+    printf("Iteration time: %f s\n", time_per_frame);
+    printf("Iteration per second: %f\n", 1/time_per_frame);
 }
 
 void handle_sigint(int _) {
@@ -373,6 +408,13 @@ int read_arg(int argc, char *argv[]) {
                 printf("ERROR: steps is < 1\n");
                 return false;
             }
+        } else if (strcmp(argv[i], "-tsleep") == 0) {
+            tsleep = atoi(argv[i+1]);
+            tsleep = tsleep < 0 ? 0 : tsleep;
+        } else if (strcmp(argv[i], "-print_bodies") == 0) {
+            is_print_bodies = true;
+        } else if (strcmp(argv[i], "-print_tree") == 0) {
+            is_print_tree = true;
         }
     }
     if (n_bodies == 0) {
@@ -430,7 +472,7 @@ void malloc_bodies() {
 void malloc_nodes() {
     long long int sf, si;
 
-    n_nodes = n_bodies*4 + 1;
+    n_nodes = n_bodies*16 + 1;
     sf = n_nodes*sizeof(float);
     si = n_nodes*sizeof(int);
 
